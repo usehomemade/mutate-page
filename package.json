@@ -1,0 +1,53 @@
+{
+  "name": "mutate-page",
+  "version": "0.1.0",
+  "description": "A shared, branching website that mutates through AI-generated pages.",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tunctn/mutate-page.git"
+  },
+  "keywords": [
+    "generative-web",
+    "openrouter",
+    "sqlite",
+    "cloudflare-r2"
+  ],
+  "author": "",
+  "license": "MIT",
+  "overrides": {
+    "postcss": "^8.5.10"
+  },
+  "bugs": {
+    "url": "https://github.com/tunctn/mutate-page/issues"
+  },
+  "homepage": "https://github.com/tunctn/mutate-page#readme",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1090.0",
+    "better-sqlite3": "^12.11.1",
+    "drizzle-orm": "^0.45.2",
+    "next": "^16.2.10",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^26.1.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.2.10",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  }
+}

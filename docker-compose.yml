@@ -1,0 +1,14 @@
+services:
+  mutate-page:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    volumes:
+      - mutate-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  mutate-data:
+
