@@ -41,7 +41,7 @@ function reserve(actorHash: string) {
     world,
     parent,
     actorHash,
-    actionId: null,
+    clickedText: null,
     jobId: randomUUID(),
     childRevisionId: randomUUID(),
   });
@@ -99,5 +99,111 @@ describe("mutation reservation ledger", () => {
     expect(caught).toBeInstanceOf(repository.MutationLimitError);
     expect((caught as InstanceType<typeof repository.MutationLimitError>).code)
       .toBe("DAILY_BUDGET_REACHED");
+  });
+
+  it("resets the shared tree and restores the bare primordial mutation button", async () => {
+    const result = await worldModule.resetSharedWorld();
+    const tree = repository.getWorldTree(worldModule.SHARED_WORLD_ID);
+    const root = repository.getReadyRevision(worldModule.ROOT_REVISION_ID);
+
+    expect(result.storageCleared).toBe(true);
+    expect(tree.map((revision) => revision.id)).toEqual([
+      worldModule.ROOT_REVISION_ID,
+    ]);
+    expect(root?.sourceKey).toBeTruthy();
+    const source = fs.readFileSync(
+      path.join(
+        testDirectory,
+        "objects",
+        root?.sourceKey || "missing-source-key",
+      ),
+      "utf8",
+    );
+    expect(source).toContain('<button type="button" data-href="mutate">mutate</button>');
+    expect(source).not.toContain("nothing, yet");
+
+    process.env.DAILY_OPENROUTER_BUDGET_USD = "1";
+    process.env.OPENROUTER_COST_RESERVATION_USD = "0.1";
+    const active = reserve("reset-guard");
+    expect(
+      repository.getMutationJobForActor(active.jobId, "reset-guard")?.status,
+    ).toBe("reserved");
+    expect(
+      repository.getMutationJobForActor(active.jobId, "different-actor"),
+    ).toBeUndefined();
+    await expect(worldModule.resetSharedWorld()).rejects.toBeInstanceOf(
+      worldModule.WorldResetConflict,
+    );
+    repository.failMutation(active, {
+      code: "TEST_CLEANUP",
+      message: "Intentional test cleanup.",
+    });
+  });
+
+  it("persists UI-ready macromutation metadata on the child revision and tree", () => {
+    const world = repository.getWorldById(worldModule.SHARED_WORLD_ID);
+    if (!world) throw new Error("Test world did not initialize.");
+
+    const reservation = reserve("actor-macromutation");
+    const macromutation = {
+      label: "Macromutation",
+      directive: "Turn the inherited page into a navigable field of living typography.",
+    };
+    repository.completeMutation(reservation, world.id, {
+      title: "A large leap",
+      summary: "A test macromutation.",
+      dna: {
+        topic: "evolution",
+        visualStyle: "living typography",
+        layout: "spatial field",
+        interactiveFeatures: ["keyboard navigation"],
+        inheritedTraits: ["primordial button"],
+      },
+      mutation: {
+        description: "The page made a large phenotypic leap.",
+        changes: ["Became spatial"],
+        similarity: 0.2,
+        macromutation,
+      },
+      sourceKey: "test/source.html",
+      pageKey: "test/page.html",
+      manifestKey: "test/manifest.json",
+      generationKey: "test/generation.json",
+      contentHash: "test-hash",
+      model: "test-model",
+      scope: "full",
+      durationMs: 1234,
+      temperature: 0.9,
+      mutationStrength: 0.7,
+      openrouterGenerationId: "test-generation",
+      promptTokens: 100,
+      completionTokens: 200,
+      reasoningTokens: 0,
+      costMicrousd: 20,
+      costIsEstimate: false,
+    });
+
+    const revision = repository.getReadyRevision(reservation.childRevisionId);
+    if (!revision) throw new Error("Completed revision was not found.");
+    expect(repository.getRevisionMacromutation(revision)).toEqual(macromutation);
+    expect(revision.scope).toBe("full");
+    expect(
+      repository
+        .getWorldTree(world.id)
+        .find((node) => node.id === reservation.childRevisionId)
+        ?.macromutation,
+    ).toEqual(macromutation);
+
+    const stats = repository.getAdminStats();
+    expect(stats.recent[0].durationMs).toBe(1234);
+    expect(stats.recent[0].similarity).toBe(0.2);
+    expect(stats.recent[0].changes).toEqual(["Became spatial"]);
+    expect(stats.recent[0].changeDescription).toBe(
+      "The page made a large phenotypic leap.",
+    );
+    expect(stats.durations.count).toBeGreaterThanOrEqual(1);
+    expect(stats.page).toBe(1);
+    expect(stats.pageSize).toBe(25);
+    expect(stats.recentTotal).toBeGreaterThanOrEqual(1);
   });
 });

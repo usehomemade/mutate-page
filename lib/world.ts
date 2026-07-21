@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getDatabase } from "@/lib/db";
+import { errorForLog, logError } from "@/lib/log";
 import { buildSandboxDocument, contentHash } from "@/lib/sandbox";
 import { getObjectStorage } from "@/lib/storage";
 
@@ -15,52 +16,55 @@ const primordialSource = `<!doctype html>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Primordial page</title>
     <style>
-      :root { color-scheme: dark; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-      * { box-sizing: border-box; }
-      body {
-        min-height: 100vh; margin: 0; display: grid; place-items: center;
-        color: #f3f1e8; background:
-          radial-gradient(circle at 50% 45%, rgba(226,255,91,.14), transparent 22rem),
-          #11110f;
-      }
-      main { width: min(36rem, calc(100% - 3rem)); text-align: center; }
-      .cell {
-        width: 5.5rem; aspect-ratio: 1; margin: 0 auto 2rem; border-radius: 48% 52% 58% 42%;
-        border: 1px solid rgba(226,255,91,.65); background: rgba(226,255,91,.08);
-        box-shadow: 0 0 5rem rgba(226,255,91,.16); animation: breathe 5s ease-in-out infinite;
-      }
-      h1 { margin: 0; font-size: clamp(2rem, 7vw, 4.5rem); letter-spacing: -.08em; }
-      p { color: #a7a59c; line-height: 1.7; }
-      small { display: block; margin-top: 2rem; color: #706f69; }
-      @keyframes breathe { 50% { transform: scale(1.08) rotate(8deg); border-radius: 56% 44% 40% 60%; } }
-      @media (prefers-reduced-motion: reduce) { .cell { animation: none; } }
+      html, body { height: 100%; }
+      body { margin: 0; display: grid; place-items: center; }
     </style>
   </head>
   <body>
-    <main>
-      <div class="cell" aria-hidden="true"></div>
-      <h1>nothing, yet.</h1>
-      <p>This is the primordial page. Use the mutation control outside this specimen to begin the shared evolutionary tree.</p>
-      <small>revision 0 · awaiting selection pressure</small>
-    </main>
+    <button type="button" data-href="mutate">mutate</button>
   </body>
 </html>`;
 
+const primordialDna = {
+  topic: "nothing",
+  visualStyle: "unstyled native HTML",
+  layout: "one centered button",
+  interactiveFeatures: ["mutation button"],
+  inheritedTraits: ["begin from almost nothing"],
+};
+
+const primordialMutation = {
+  description: "The primordial ancestor.",
+  changes: [],
+  similarity: 1,
+};
+
+function primordialKeys() {
+  const prefix = `worlds/${SHARED_WORLD_ID}/revisions/${ROOT_REVISION_ID}`;
+  return {
+    sourceKey: `${prefix}/source.html`,
+    pageKey: `${prefix}/page.html`,
+    manifestKey: `${prefix}/manifest.json`,
+    generationKey: `${prefix}/generation.json`,
+  };
+}
+
 export async function ensureSharedWorld() {
   const { sqlite } = getDatabase();
+  const hash = contentHash(primordialSource);
   const existing = sqlite
-    .prepare(`SELECT * FROM worlds WHERE id = ?`)
-    .get(SHARED_WORLD_ID);
-  if (existing) return;
+    .prepare(
+      `SELECT w.id, r.content_hash AS contentHash
+       FROM worlds w
+       LEFT JOIN revisions r ON r.id = w.root_revision_id
+       WHERE w.id = ?`,
+    )
+    .get(SHARED_WORLD_ID) as { id: string; contentHash: string | null } | undefined;
+  if (existing?.contentHash === hash) return;
 
   const now = new Date().toISOString();
-  const prefix = `worlds/${SHARED_WORLD_ID}/revisions/${ROOT_REVISION_ID}`;
-  const sourceKey = `${prefix}/source.html`;
-  const pageKey = `${prefix}/page.html`;
-  const manifestKey = `${prefix}/manifest.json`;
-  const generationKey = `${prefix}/generation.json`;
-  const page = buildSandboxDocument(primordialSource, ROOT_REVISION_ID, []);
-  const hash = contentHash(primordialSource);
+  const { sourceKey, pageKey, manifestKey, generationKey } = primordialKeys();
+  const page = buildSandboxDocument(primordialSource, ROOT_REVISION_ID);
   const storage = getObjectStorage();
 
   await Promise.all([
@@ -81,9 +85,8 @@ export async function ensureSharedWorld() {
           revisionId: ROOT_REVISION_ID,
           parentRevisionId: null,
           title: "Primordial page",
-          summary: "The fixed root of the shared evolutionary tree.",
+          summary: "One unstyled button at the root of the shared tree.",
           contentHash: hash,
-          actions: [],
           createdAt: now,
         },
         null,
@@ -129,19 +132,9 @@ export async function ensureSharedWorld() {
         ROOT_REVISION_ID,
         SHARED_WORLD_ID,
         "Primordial page",
-        "The fixed root of the shared evolutionary tree.",
-        JSON.stringify({
-          topic: "nothing",
-          visualStyle: "dark primordial minimalism",
-          layout: "single centered cell",
-          interactiveFeatures: [],
-          inheritedTraits: ["begin from almost nothing"],
-        }),
-        JSON.stringify({
-          description: "The primordial ancestor.",
-          changes: [],
-          similarity: 1,
-        }),
+        "One unstyled button at the root of the shared tree.",
+        JSON.stringify(primordialDna),
+        JSON.stringify(primordialMutation),
         sourceKey,
         pageKey,
         manifestKey,
@@ -151,6 +144,82 @@ export async function ensureSharedWorld() {
         now,
         now,
       );
+
+    sqlite
+      .prepare(
+        `UPDATE worlds
+         SET root_revision_id = ?, current_revision_id = COALESCE(current_revision_id, ?)
+         WHERE id = ?`,
+      )
+      .run(ROOT_REVISION_ID, ROOT_REVISION_ID, SHARED_WORLD_ID);
+    sqlite
+      .prepare(
+        `UPDATE revisions SET
+          status = 'ready', title = ?, summary = ?, dna_json = ?, mutation_json = ?,
+          source_key = ?, page_key = ?, manifest_key = ?, generation_key = ?,
+          content_hash = ?, model = 'built-in', temperature = NULL,
+          mutation_strength = NULL, openrouter_generation_id = NULL,
+          prompt_tokens = 0, completion_tokens = 0, reasoning_tokens = 0,
+          cost_microusd = 0, cost_is_estimate = 0, error_message = NULL,
+          completed_at = ?
+         WHERE id = ? AND world_id = ?`,
+      )
+      .run(
+        "Primordial page",
+        "One unstyled button at the root of the shared tree.",
+        JSON.stringify(primordialDna),
+        JSON.stringify(primordialMutation),
+        sourceKey,
+        pageKey,
+        manifestKey,
+        generationKey,
+        hash,
+        now,
+        ROOT_REVISION_ID,
+        SHARED_WORLD_ID,
+      );
   })();
 }
 
+export class WorldResetConflict extends Error {
+  constructor() {
+    super("Wait for the active mutation to finish before resetting the world.");
+    this.name = "WorldResetConflict";
+  }
+}
+
+export async function resetSharedWorld() {
+  const { sqlite } = getDatabase();
+
+  sqlite.transaction(() => {
+    const active = sqlite
+      .prepare(
+        `SELECT COUNT(*) AS count FROM mutation_jobs
+         WHERE world_id = ? AND status IN ('reserved', 'running')`,
+      )
+      .get(SHARED_WORLD_ID) as { count: number };
+    if (active.count > 0) throw new WorldResetConflict();
+
+    sqlite
+      .prepare(`DELETE FROM mutation_jobs WHERE world_id = ?`)
+      .run(SHARED_WORLD_ID);
+    sqlite
+      .prepare(`DELETE FROM revisions WHERE world_id = ?`)
+      .run(SHARED_WORLD_ID);
+    sqlite.prepare(`DELETE FROM worlds WHERE id = ?`).run(SHARED_WORLD_ID);
+  }).immediate();
+
+  let storageCleared = true;
+  try {
+    await getObjectStorage().deletePrefix(`worlds/${SHARED_WORLD_ID}`);
+  } catch (error) {
+    storageCleared = false;
+    logError("world.reset_storage_cleanup_failed", {
+      worldId: SHARED_WORLD_ID,
+      error: errorForLog(error),
+    });
+  }
+
+  await ensureSharedWorld();
+  return { storageCleared };
+}

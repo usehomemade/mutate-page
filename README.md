@@ -2,7 +2,7 @@
 
 One public web page that evolves forever.
 
-Every click on **mutate** asks an OpenRouter model to make a child of the page currently being viewed. A model-generated evolutionary link adds selection pressure (for example, “cats” or “play a cat game”). Mutating an old revision creates a branch instead of rewriting history.
+Clicking a link or control inside the current page asks an OpenRouter model to make a child of it. A model-generated evolutionary link (marked `data-evolve`) adds selection pressure (for example, “cats” or “play a cat game”); any other in-page link drifts randomly. Evolving an old revision creates a branch instead of rewriting history.
 
 The stable application chrome is Next.js. Each generated specimen is standalone HTML with inline CSS and optional vanilla JavaScript, rendered in an opaque-origin sandbox. This is deliberate: raw web primitives give the model much more visual range than a fixed React component or Tailwind vocabulary, and make every revision easy to preserve as one immutable artifact.
 
@@ -23,7 +23,7 @@ The stable application chrome is Next.js. Each generated specimen is standalone 
 
 ```text
 browser on revision A
-       │  mutate or select [data-evolve]
+       │  click a link / [data-evolve] inside the page
        ▼
 POST /api/mutate ── atomic budget/quota reservation in SQLite
        │

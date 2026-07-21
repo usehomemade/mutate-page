@@ -1,18 +1,20 @@
 import { describe, expect, it } from "vitest";
 
-import { generatedPageSchema } from "@/lib/mutation-schema";
+import { contentBriefSchema, generatedPatchSchema } from "@/lib/mutation-schema";
 
-const validPage = {
-  title: "Cat atlas",
-  summary: "A compact atlas of domestic cats.",
-  html: "<!doctype html><html><head><title>Cat atlas</title></head><body><button data-evolve=\"play-cats\">Play</button></body></html>",
-  actions: [
+const validPatch = {
+  scope: "region",
+  html: "",
+  regions: [
     {
-      id: "play-cats",
-      label: "Play cats",
-      intent: "Evolve into a tiny cat game.",
+      id: 0,
+      html: "<a href=\"/play-cats\">Play</a>",
     },
   ],
+  appendCss: "",
+  appendJs: "",
+  title: "Cat atlas",
+  summary: "A compact atlas of domestic cats.",
   dna: {
     topic: "cats",
     visualStyle: "encyclopedic",
@@ -26,27 +28,46 @@ const validPage = {
   },
 };
 
-describe("OpenRouter structured page schema", () => {
-  it("accepts a complete bounded page description", () => {
-    expect(generatedPageSchema.parse(validPage)).toEqual(validPage);
+describe("OpenRouter structured patch schema", () => {
+  it("accepts a complete bounded patch description with no action-declaration fields", () => {
+    expect(generatedPatchSchema.parse(validPatch)).toEqual(validPatch);
   });
 
-  it("rejects malformed evolutionary action IDs", () => {
-    const result = generatedPageSchema.safeParse({
-      ...validPage,
-      actions: [{ ...validPage.actions[0], id: "Play Cats!" }],
+  it("rejects more than six regions", () => {
+    const result = generatedPatchSchema.safeParse({
+      ...validPatch,
+      regions: Array.from({ length: 7 }, (_, index) => ({
+        id: index,
+        html: `<div>${index}</div>`,
+      })),
     });
     expect(result.success).toBe(false);
   });
+});
 
-  it("rejects more than eight actions", () => {
-    const result = generatedPageSchema.safeParse({
-      ...validPage,
-      actions: Array.from({ length: 9 }, (_, index) => ({
-        id: `path-${index}`,
-        label: `Path ${index}`,
-        intent: `Follow path ${index}`,
-      })),
+const validBrief = {
+  subject: "a weekend farmers-market finder",
+  genre: "a local-commerce directory",
+  tone: "warm and practical",
+  keyContent: ["A map of nearby markets.", "A list of what's in season."],
+  visualDirection: "Earthy palette, hand-drawn icons.",
+  interactionIdeas: ["A 'Find near me' button."],
+};
+
+describe("OpenRouter structured content brief schema", () => {
+  it("accepts a complete bounded brief", () => {
+    expect(contentBriefSchema.parse(validBrief)).toEqual(validBrief);
+  });
+
+  it("rejects an empty keyContent list", () => {
+    const result = contentBriefSchema.safeParse({ ...validBrief, keyContent: [] });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects more than five interaction ideas", () => {
+    const result = contentBriefSchema.safeParse({
+      ...validBrief,
+      interactionIdeas: Array.from({ length: 6 }, (_, index) => `Idea ${index}`),
     });
     expect(result.success).toBe(false);
   });

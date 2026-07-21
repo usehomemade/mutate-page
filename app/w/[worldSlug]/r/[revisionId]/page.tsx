@@ -5,6 +5,7 @@ import { WorldClient } from "@/components/world-client";
 import {
   getLineage,
   getReadyRevision,
+  getRevisionMacromutation,
   getWorldBySlug,
   getWorldTree,
 } from "@/lib/repository";
@@ -51,10 +52,11 @@ export default async function RevisionPage(context: PageContext) {
         summary: revision.summary,
         createdAt: revision.createdAt,
         mutationStrength: revision.mutationStrength,
+        macromutation: getRevisionMacromutation(revision),
+        contentHash: revision.contentHash,
       }}
       tree={tree}
       lineage={lineage}
-      isWorldTip={world.currentRevisionId === revision.id}
     />
   );
 }

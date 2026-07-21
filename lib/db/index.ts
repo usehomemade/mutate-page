@@ -44,6 +44,8 @@ const migrationSql = `
     generation_key TEXT,
     content_hash TEXT,
     model TEXT,
+    scope TEXT,
+    duration_ms INTEGER,
     temperature REAL,
     mutation_strength REAL,
     openrouter_generation_id TEXT,
@@ -62,22 +64,13 @@ const migrationSql = `
   CREATE INDEX IF NOT EXISTS revisions_parent_idx ON revisions(parent_id);
   CREATE INDEX IF NOT EXISTS revisions_status_idx ON revisions(status);
 
-  CREATE TABLE IF NOT EXISTS revision_actions (
-    revision_id TEXT NOT NULL REFERENCES revisions(id) ON DELETE CASCADE,
-    action_id TEXT NOT NULL,
-    label TEXT NOT NULL,
-    intent TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    PRIMARY KEY (revision_id, action_id)
-  );
-
   CREATE TABLE IF NOT EXISTS mutation_jobs (
     id TEXT PRIMARY KEY NOT NULL,
     world_id TEXT NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
     parent_revision_id TEXT NOT NULL REFERENCES revisions(id),
     child_revision_id TEXT NOT NULL REFERENCES revisions(id),
     actor_hash TEXT NOT NULL,
-    action_id TEXT,
+    clicked_text TEXT,
     status TEXT NOT NULL CHECK (status IN ('reserved', 'running', 'completed', 'failed')),
     reserved_cost_microusd INTEGER NOT NULL,
     actual_cost_microusd INTEGER NOT NULL DEFAULT 0,
@@ -95,6 +88,12 @@ const migrationSql = `
     ON mutation_jobs(actor_hash, created_at);
   CREATE INDEX IF NOT EXISTS mutation_jobs_status_idx
     ON mutation_jobs(status);
+
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY NOT NULL,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
 `;
 
 function createDatabase(): DatabaseBundle {
@@ -107,6 +106,32 @@ function createDatabase(): DatabaseBundle {
   sqlite.pragma("foreign_keys = ON");
   sqlite.pragma("busy_timeout = 5000");
   sqlite.exec(migrationSql);
+
+  try {
+    sqlite.exec("ALTER TABLE revisions ADD COLUMN scope TEXT");
+  } catch {
+    // Column already exists on databases created after this migration.
+  }
+
+  try {
+    sqlite.exec("ALTER TABLE revisions ADD COLUMN duration_ms INTEGER");
+  } catch {
+    // Column already exists on databases created after this migration.
+  }
+
+  try {
+    sqlite.exec(
+      "ALTER TABLE mutation_jobs RENAME COLUMN action_id TO clicked_text",
+    );
+  } catch {
+    // Already renamed, or the column never existed on a fresh database.
+  }
+
+  try {
+    sqlite.exec("DROP TABLE IF EXISTS revision_actions");
+  } catch {
+    // Already dropped.
+  }
 
   return {
     sqlite,

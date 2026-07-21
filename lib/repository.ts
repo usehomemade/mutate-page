@@ -1,22 +1,24 @@
 import "server-only";
 
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 
-import { getAppConfig } from "@/lib/config";
 import { getDatabase } from "@/lib/db";
 import {
-  revisionActions,
   revisions,
   worlds,
   type Revision,
-  type RevisionAction,
   type World,
 } from "@/lib/db/schema";
-import type {
-  EvolutionaryAction,
-  MutationDescription,
-  PageDna,
-} from "@/lib/mutation-schema";
+import {
+  macromutationFromMutationJson,
+  type Macromutation,
+} from "@/lib/macromutation";
+import type { MutationDescription, PageDna } from "@/lib/mutation-schema";
+import { getRuntimeLimits } from "@/lib/settings";
+
+function usdToMicros(value: number) {
+  return Math.round(value * 1_000_000);
+}
 
 export class MutationLimitError extends Error {
   constructor(
@@ -42,14 +44,18 @@ export type CompletedMutation = {
   title: string;
   summary: string;
   dna: PageDna;
-  mutation: MutationDescription & { similarity: number };
-  actions: EvolutionaryAction[];
+  mutation: MutationDescription & {
+    similarity: number;
+    macromutation: Macromutation | null;
+  };
   sourceKey: string;
   pageKey: string;
   manifestKey: string;
   generationKey: string;
   contentHash: string;
   model: string;
+  scope: "region" | "full";
+  durationMs: number;
   temperature: number;
   mutationStrength: number;
   openrouterGenerationId: string | null;
@@ -93,42 +99,45 @@ export function getReadyRevision(id: string) {
     .get();
 }
 
-export function getRevisionActions(revisionId: string) {
-  return getDatabase().db
-    .select()
-    .from(revisionActions)
-    .where(eq(revisionActions.revisionId, revisionId))
-    .orderBy(asc(revisionActions.createdAt))
-    .all();
-}
-
-export function getRevisionAction(revisionId: string, actionId: string) {
-  return getDatabase().db
-    .select()
-    .from(revisionActions)
-    .where(
-      and(
-        eq(revisionActions.revisionId, revisionId),
-        eq(revisionActions.actionId, actionId),
-      ),
+export function getMutationJobForActor(jobId: string, actorHash: string) {
+  return getDatabase().sqlite
+    .prepare(
+      `SELECT
+         j.status, j.failure_code AS failureCode,
+         j.error_message AS errorMessage,
+         j.child_revision_id AS revisionId,
+         w.slug AS worldSlug
+       FROM mutation_jobs j
+       JOIN worlds w ON w.id = j.world_id
+       WHERE j.id = ? AND j.actor_hash = ?`,
     )
-    .get();
+    .get(jobId, actorHash) as
+    | {
+        status: "reserved" | "running" | "completed" | "failed";
+        failureCode: string | null;
+        errorMessage: string | null;
+        revisionId: string;
+        worldSlug: string;
+      }
+    | undefined;
 }
 
 export function reserveMutation(input: {
   world: World;
   parent: Revision;
   actorHash: string;
-  actionId: string | null;
+  clickedText: string | null;
   jobId: string;
   childRevisionId: string;
 }): MutationReservation {
   const { sqlite } = getDatabase();
-  const config = getAppConfig();
+  const limits = getRuntimeLimits();
+  const reservationMicrousd = usdToMicros(limits.costReservationUsd);
+  const dailyBudgetMicrousd = usdToMicros(limits.dailyBudgetUsd);
   const now = new Date();
   const nowIso = now.toISOString();
   const staleBeforeIso = new Date(
-    now.getTime() - config.mutation.staleAfterSeconds * 1_000,
+    now.getTime() - limits.staleAfterSeconds * 1_000,
   ).toISOString();
   const { start, end } = utcDayWindow(now);
 
@@ -175,7 +184,7 @@ export function reserveMutation(input: {
       )
       .get() as { count: number };
 
-    if (concurrent.count >= config.mutation.maxConcurrent) {
+    if (concurrent.count >= limits.maxConcurrent) {
       throw new MutationLimitError(
         "The organism is already mutating. Try again shortly.",
         "MAX_CONCURRENT_GENERATIONS",
@@ -196,10 +205,7 @@ export function reserveMutation(input: {
       )
       .get(start, end) as { committed: number };
 
-    if (
-      usage.committed + config.budget.reservationMicrousd >
-      config.budget.dailyMicrousd
-    ) {
+    if (usage.committed + reservationMicrousd > dailyBudgetMicrousd) {
       const secondsUntilReset = Math.max(
         1,
         Math.ceil((new Date(end).getTime() - now.getTime()) / 1_000),
@@ -222,7 +228,7 @@ export function reserveMutation(input: {
       latest: string | null;
     };
 
-    if (actorUsage.count >= config.mutation.visitorDailyLimit) {
+    if (actorUsage.count >= limits.visitorDailyLimit) {
       throw new MutationLimitError(
         "You have reached today’s mutation limit. Other visitors can keep evolving this world.",
         "VISITOR_DAILY_LIMIT",
@@ -233,13 +239,13 @@ export function reserveMutation(input: {
       );
     }
 
-    if (actorUsage.latest && config.mutation.cooldownSeconds > 0) {
+    if (actorUsage.latest && limits.cooldownSeconds > 0) {
       const elapsed = (now.getTime() - new Date(actorUsage.latest).getTime()) / 1_000;
-      if (elapsed < config.mutation.cooldownSeconds) {
+      if (elapsed < limits.cooldownSeconds) {
         throw new MutationLimitError(
           "Give this mutation a moment to settle before creating another.",
           "MUTATION_COOLDOWN",
-          Math.ceil(config.mutation.cooldownSeconds - elapsed),
+          Math.ceil(limits.cooldownSeconds - elapsed),
         );
       }
     }
@@ -276,7 +282,7 @@ export function reserveMutation(input: {
       .prepare(
         `INSERT INTO mutation_jobs (
           id, world_id, parent_revision_id, child_revision_id, actor_hash,
-          action_id, status, reserved_cost_microusd, created_at
+          clicked_text, status, reserved_cost_microusd, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?, ?)`,
       )
       .run(
@@ -285,15 +291,15 @@ export function reserveMutation(input: {
         input.parent.id,
         input.childRevisionId,
         input.actorHash,
-        input.actionId,
-        config.budget.reservationMicrousd,
+        input.clickedText,
+        reservationMicrousd,
         nowIso,
       );
 
     return {
       jobId: input.jobId,
       childRevisionId: input.childRevisionId,
-      reservedCostMicrousd: config.budget.reservationMicrousd,
+      reservedCostMicrousd: reservationMicrousd,
     };
   });
 
@@ -325,7 +331,7 @@ export function completeMutation(
         `UPDATE revisions SET
           status = 'ready', title = ?, summary = ?, dna_json = ?, mutation_json = ?,
           source_key = ?, page_key = ?, manifest_key = ?, generation_key = ?,
-          content_hash = ?, model = ?, temperature = ?, mutation_strength = ?,
+          content_hash = ?, model = ?, scope = ?, duration_ms = ?, temperature = ?, mutation_strength = ?,
           openrouter_generation_id = ?, prompt_tokens = ?, completion_tokens = ?,
           reasoning_tokens = ?, cost_microusd = ?, cost_is_estimate = ?,
           completed_at = ?, error_message = NULL
@@ -342,6 +348,8 @@ export function completeMutation(
         result.generationKey,
         result.contentHash,
         result.model,
+        result.scope,
+        result.durationMs,
         result.temperature,
         result.mutationStrength,
         result.openrouterGenerationId,
@@ -355,21 +363,6 @@ export function completeMutation(
       );
     if (revisionUpdate.changes !== 1) {
       throw new Error("The mutation lease expired before it could be committed.");
-    }
-
-    const actionStatement = sqlite.prepare(
-      `INSERT INTO revision_actions (
-        revision_id, action_id, label, intent, created_at
-      ) VALUES (?, ?, ?, ?, ?)`,
-    );
-    for (const action of result.actions) {
-      actionStatement.run(
-        reservation.childRevisionId,
-        action.id,
-        action.label,
-        action.intent,
-        now,
-      );
     }
 
     sqlite
@@ -466,7 +459,14 @@ export type TreeRevision = Pick<
   | "mutationStrength"
 > & {
   children: string[];
+  macromutation: Macromutation | null;
 };
+
+export function getRevisionMacromutation(
+  revision: Pick<Revision, "mutationJson">,
+) {
+  return macromutationFromMutationJson(revision.mutationJson);
+}
 
 export function getWorldTree(worldId: string): TreeRevision[] {
   const rows = getDatabase().db
@@ -478,6 +478,7 @@ export function getWorldTree(worldId: string): TreeRevision[] {
       summary: revisions.summary,
       createdAt: revisions.createdAt,
       mutationStrength: revisions.mutationStrength,
+      mutationJson: revisions.mutationJson,
     })
     .from(revisions)
     .where(and(eq(revisions.worldId, worldId), eq(revisions.status, "ready")))
@@ -491,9 +492,10 @@ export function getWorldTree(worldId: string): TreeRevision[] {
     children.set(row.parentId, [...(children.get(row.parentId) || []), row.id]);
   }
 
-  return rows.map((row) => ({
+  return rows.map(({ mutationJson, ...row }) => ({
     ...row,
     children: children.get(row.id) || [],
+    macromutation: macromutationFromMutationJson(mutationJson),
   }));
 }
 
@@ -514,7 +516,7 @@ export function getLineage(tree: TreeRevision[], revisionId: string) {
 
 export function getBudgetSnapshot() {
   const { sqlite } = getDatabase();
-  const config = getAppConfig();
+  const dailyBudgetMicrousd = usdToMicros(getRuntimeLimits().dailyBudgetUsd);
   const { start, end } = utcDayWindow();
   const row = sqlite
     .prepare(
@@ -536,14 +538,17 @@ export function getBudgetSnapshot() {
 
   return {
     ...row,
-    limit: config.budget.dailyMicrousd,
-    remaining: Math.max(0, config.budget.dailyMicrousd - row.spent - row.reserved),
+    limit: dailyBudgetMicrousd,
+    remaining: Math.max(0, dailyBudgetMicrousd - row.spent - row.reserved),
     resetsAt: end,
   };
 }
 
-export function getAdminStats() {
+export function getAdminStats(options?: { page?: number; pageSize?: number }) {
   const { sqlite } = getDatabase();
+  const page = Math.max(1, options?.page ?? 1);
+  const pageSize = Math.min(100, Math.max(1, options?.pageSize ?? 25));
+  const offset = (page - 1) * pageSize;
   const budget = getBudgetSnapshot();
   const daily = sqlite
     .prepare(
@@ -602,47 +607,118 @@ export function getAdminStats() {
     )
     .get() as { count: number };
 
-  const recent = sqlite
+  const recentRows = sqlite
     .prepare(
       `SELECT
-         j.id, j.status, j.action_id AS actionId,
+         j.id, j.status, j.clicked_text AS clickedText,
          j.actual_cost_microusd AS costMicrousd,
          j.cost_is_estimate AS costIsEstimate,
-         j.failure_code AS failureCode, j.created_at AS createdAt,
+         j.failure_code AS failureCode, j.error_message AS errorMessage,
+         j.created_at AS createdAt,
+         j.started_at AS startedAt,
          j.completed_at AS completedAt,
-         r.id AS revisionId, r.title, r.model,
+         r.id AS revisionId, r.title, r.model, r.scope,
+         r.duration_ms AS durationMs,
          r.prompt_tokens AS promptTokens,
          r.completion_tokens AS completionTokens,
-         r.reasoning_tokens AS reasoningTokens
+         r.reasoning_tokens AS reasoningTokens,
+         r.mutation_json AS mutationJson
        FROM mutation_jobs j
        JOIN revisions r ON r.id = j.child_revision_id
-       ORDER BY j.created_at DESC LIMIT 30`,
+       ORDER BY j.created_at DESC LIMIT ? OFFSET ?`,
     )
-    .all() as Array<{
+    .all(pageSize, offset) as Array<{
     id: string;
     status: string;
-    actionId: string | null;
+    clickedText: string | null;
     costMicrousd: number;
     costIsEstimate: number;
     failureCode: string | null;
+    errorMessage: string | null;
     createdAt: string;
+    startedAt: string | null;
     completedAt: string | null;
     revisionId: string;
     title: string;
     model: string | null;
+    scope: string | null;
+    durationMs: number | null;
     promptTokens: number;
     completionTokens: number;
     reasoningTokens: number;
+    mutationJson: string;
   }>;
 
-  return { budget, daily, totals, branches: branches.count, recent };
+  const recent = recentRows.map(({ mutationJson, ...row }) => {
+    let similarity: number | null = null;
+    let changes: string[] = [];
+    let changeDescription: string | null = null;
+    try {
+      const mutation = JSON.parse(mutationJson) as {
+        similarity?: number;
+        changes?: string[];
+        description?: string;
+      };
+      similarity = typeof mutation.similarity === "number" ? mutation.similarity : null;
+      changes = Array.isArray(mutation.changes) ? mutation.changes : [];
+      changeDescription =
+        typeof mutation.description === "string" ? mutation.description : null;
+    } catch {
+      similarity = null;
+      changes = [];
+      changeDescription = null;
+    }
+
+    return { ...row, similarity, changes, changeDescription };
+  });
+
+  const recentTotal = (
+    sqlite.prepare(`SELECT COUNT(*) AS count FROM mutation_jobs`).get() as {
+      count: number;
+    }
+  ).count;
+
+  const durationValues = (
+    sqlite
+      .prepare(
+        `SELECT duration_ms AS durationMs FROM revisions
+         WHERE status = 'ready' AND duration_ms IS NOT NULL
+         ORDER BY duration_ms ASC`,
+      )
+      .all() as Array<{ durationMs: number }>
+  ).map((row) => row.durationMs);
+
+  const percentile = (sorted: number[], p: number) => {
+    const n = sorted.length;
+    if (n === 0) return 0;
+    const idx = Math.min(n - 1, Math.max(0, Math.ceil((p / 100) * n) - 1));
+    return sorted[idx];
+  };
+
+  const durations =
+    durationValues.length === 0
+      ? { count: 0, avgMs: 0, p50Ms: 0, p95Ms: 0, maxMs: 0 }
+      : {
+          count: durationValues.length,
+          avgMs: Math.round(
+            durationValues.reduce((total, value) => total + value, 0) /
+              durationValues.length,
+          ),
+          p50Ms: Math.round(percentile(durationValues, 50)),
+          p95Ms: Math.round(percentile(durationValues, 95)),
+          maxMs: Math.round(durationValues[durationValues.length - 1]),
+        };
+
+  return {
+    budget,
+    daily,
+    totals,
+    branches: branches.count,
+    recent,
+    recentTotal,
+    page,
+    pageSize,
+    durations,
+  };
 }
 
-export function listRecentActions(): RevisionAction[] {
-  return getDatabase().db
-    .select()
-    .from(revisionActions)
-    .orderBy(desc(revisionActions.createdAt))
-    .limit(30)
-    .all();
-}

@@ -7,12 +7,6 @@ import {
   validateGeneratedDocument,
 } from "@/lib/sandbox";
 
-const action = {
-  id: "follow-cats",
-  label: "Cats",
-  intent: "Evolve toward a page about cats.",
-};
-
 function page(body: string) {
   return `<!doctype html><html><head><title>Test</title></head><body>${body}</body></html>`;
 }
@@ -35,41 +29,43 @@ describe("generated document sandbox", () => {
     expect(clean).not.toMatch(/<iframe\b/i);
   });
 
-  it("injects a CSP and a revision-bound bridge", () => {
+  it("injects a CSP and a revision-bound bridge with no experiment-aware markup required", () => {
     const document = buildSandboxDocument(
-      page('<button data-evolve="follow-cats">Cats</button>'),
+      page('<a href="/another-page">Cats</a>'),
       "revision-123",
-      [action],
     );
 
     expect(document).toContain("Content-Security-Policy");
     expect(document).toContain("navigate-to 'none'");
     expect(document).toContain('const revisionId = "revision-123"');
-    expect(document).toContain('new Set(["follow-cats"])');
+    expect(document).toContain("if (!event.isTrusted) return");
     expect(document).toContain("data-mutate-bridge");
+    expect(document).not.toContain("data-evolve");
   });
 
-  it("requires every declared action to exist in the DOM", () => {
-    expect(() => validateGeneratedDocument(page("<p>No link</p>"), [action], 50_000))
-      .toThrow(/no matching data-evolve/i);
+  it("turns ordinary page navigation into a fresh mutation, reporting what was clicked", () => {
+    const document = buildSandboxDocument(
+      page('<a href="/another-page">Another page</a>'),
+      "revision-123",
+    );
 
+    expect(document).toContain('event.target.closest("a[href]');
+    expect(document).toContain("clickedText");
+    expect(document).toContain("clickedTag");
+  });
+
+  it("passes plain pages with no declared actions or metadata", () => {
     expect(() =>
-      validateGeneratedDocument(
-        page('<button data-evolve="follow-cats">Cats</button>'),
-        [action],
-        50_000,
-      ),
+      validateGeneratedDocument(page("<p>No link</p>"), 50_000),
     ).not.toThrow();
   });
 
-  it("rejects duplicate actions, oversized pages, and parent communication", () => {
-    const valid = page('<button data-evolve="follow-cats">Cats</button>');
-    expect(() => validateGeneratedDocument(valid, [action, action], 50_000)).toThrow(/unique/i);
-    expect(() => validateGeneratedDocument(valid, [action], 20)).toThrow(/limit/i);
+  it("rejects oversized pages and parent communication", () => {
+    const valid = page('<a href="/another-page">Cats</a>');
+    expect(() => validateGeneratedDocument(valid, 20)).toThrow(/limit/i);
     expect(() =>
       validateGeneratedDocument(
-        page('<button data-evolve="follow-cats">Cats</button><script>window.parent.postMessage({})</script>'),
-        [action],
+        page('<a href="/another-page">Cats</a><script>window.parent.postMessage({})</script>'),
         50_000,
       ),
     ).toThrow(/outside its sandbox/i);

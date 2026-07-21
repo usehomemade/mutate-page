@@ -3,7 +3,13 @@ import "server-only";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  DeleteObjectsCommand,
+  GetObjectCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 
 import { getAppConfig } from "@/lib/config";
 
@@ -16,11 +22,20 @@ export type ObjectStorage = {
   mode: "r2" | "local";
   put(key: string, body: string, options: PutOptions): Promise<void>;
   getText(key: string): Promise<string>;
+  deletePrefix(prefix: string): Promise<void>;
 };
 
 const globalForStorage = globalThis as typeof globalThis & {
   mutateObjectStorage?: ObjectStorage;
 };
+
+function normalizedPrefix(prefix: string) {
+  const normalized = prefix.replaceAll("\\", "/").replace(/^\/+|\/+$/g, "");
+  if (!normalized || normalized.split("/").includes("..")) {
+    throw new Error("Object storage deletion requires a safe, non-empty prefix.");
+  }
+  return normalized;
+}
 
 function createR2Storage(): ObjectStorage | null {
   const { r2 } = getAppConfig();
@@ -63,6 +78,40 @@ function createR2Storage(): ObjectStorage | null {
       if (!result.Body) throw new Error(`R2 object ${key} had no body.`);
       return result.Body.transformToString("utf-8");
     },
+    async deletePrefix(prefix) {
+      const safePrefix = `${normalizedPrefix(prefix)}/`;
+      let continuationToken: string | undefined;
+
+      do {
+        const listed = await client.send(
+          new ListObjectsV2Command({
+            Bucket: r2.bucket,
+            Prefix: safePrefix,
+            ContinuationToken: continuationToken,
+          }),
+        );
+        const objects = (listed.Contents || [])
+          .map((object) => object.Key)
+          .filter((key): key is string => Boolean(key))
+          .map((Key) => ({ Key }));
+
+        if (objects.length > 0) {
+          await client.send(
+            new DeleteObjectsCommand({
+              Bucket: r2.bucket,
+              Delete: { Objects: objects, Quiet: true },
+            }),
+          );
+        }
+
+        continuationToken = listed.IsTruncated
+          ? listed.NextContinuationToken
+          : undefined;
+        if (listed.IsTruncated && !continuationToken) {
+          throw new Error("R2 prefix listing was truncated without a continuation token.");
+        }
+      } while (continuationToken);
+    },
   };
 }
 
@@ -87,6 +136,13 @@ function createLocalStorage(): ObjectStorage {
     async getText(key) {
       return fs.readFile(resolveKey(key), "utf8");
     },
+    async deletePrefix(prefix) {
+      const target = resolveKey(normalizedPrefix(prefix));
+      if (target === root) {
+        throw new Error("Refusing to delete the object storage root.");
+      }
+      await fs.rm(target, { recursive: true, force: true });
+    },
   };
 }
 
@@ -97,4 +153,3 @@ export function getObjectStorage() {
 
   return globalForStorage.mutateObjectStorage;
 }
-

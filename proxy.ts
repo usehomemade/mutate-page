@@ -44,4 +44,4 @@ export function proxy(request: NextRequest) {
   }
 }
 
-export const config = { matcher: ["/admin/:path*"] };
+export const config = { matcher: ["/admin/:path*", "/api/admin/:path*"] };

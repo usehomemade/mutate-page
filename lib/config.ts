@@ -1,5 +1,7 @@
 import "server-only";
 
+import { resolveAppUrl } from "@/lib/app-url";
+
 function numberFromEnv(name: string, fallback: number, minimum = 0) {
   const raw = process.env[name];
   if (raw === undefined || raw === "") return fallback;
@@ -36,7 +38,7 @@ export function getAppConfig() {
   }
 
   return {
-    appUrl: process.env.APP_URL || "http://localhost:3000",
+    appUrl: resolveAppUrl(),
     appSecret,
     databasePath: process.env.DATABASE_PATH || "./data/mutate.sqlite",
     localObjectStoragePath:
@@ -72,13 +74,41 @@ export function getAppConfig() {
     },
     openRouter: {
       apiKey: process.env.OPENROUTER_API_KEY || "",
-      model: process.env.OPENROUTER_MODEL || "xiaomi/mimo-v2.5",
+      model: process.env.OPENROUTER_MODEL || "qwen/qwen3-coder-next",
+      macromutationModel:
+        process.env.OPENROUTER_MACROMUTATION_MODEL ||
+        "google/gemini-2.5-flash-lite",
+      macromutationMaxOutputTokens: integerFromEnv(
+        "OPENROUTER_MACROMUTATION_MAX_OUTPUT_TOKENS",
+        120,
+        32,
+      ),
+      macromutationTimeoutSeconds: integerFromEnv(
+        "OPENROUTER_MACROMUTATION_TIMEOUT_SECONDS",
+        8,
+        2,
+      ),
+      briefModel:
+        process.env.OPENROUTER_BRIEF_MODEL ||
+        process.env.OPENROUTER_MACROMUTATION_MODEL ||
+        "google/gemini-2.5-flash-lite",
+      briefMaxOutputTokens: integerFromEnv(
+        "OPENROUTER_BRIEF_MAX_OUTPUT_TOKENS",
+        500,
+        100,
+      ),
+      briefTimeoutSeconds: integerFromEnv(
+        "OPENROUTER_BRIEF_TIMEOUT_SECONDS",
+        10,
+        2,
+      ),
       temperature: numberFromEnv("OPENROUTER_TEMPERATURE", 0.9, 0),
       maxOutputTokens: integerFromEnv(
         "OPENROUTER_MAX_OUTPUT_TOKENS",
-        16_000,
+        6_000,
         1_000,
       ),
+      timeoutSeconds: integerFromEnv("OPENROUTER_TIMEOUT_SECONDS", 45, 10),
       zdr: booleanFromEnv("OPENROUTER_ZDR", false),
       appName: process.env.OPENROUTER_APP_NAME || "Mutate Page",
     },

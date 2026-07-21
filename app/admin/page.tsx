@@ -1,10 +1,17 @@
 import type { Metadata } from "next";
-import Link from "next/link";
+import { Badge, LayerCard, LinkButton, Meter, Text } from "@cloudflare/kumo";
+import { createLoader, parseAsInteger } from "nuqs/server";
 
+import { AdminJobsTable } from "@/components/admin-jobs-table";
+import { AdminLimitsForm } from "@/components/admin-limits-form";
+import { AdminResetButton } from "@/components/admin-reset-button";
 import { formatMicrousd, getAppConfig } from "@/lib/config";
 import { getAdminStats } from "@/lib/repository";
+import { getRuntimeLimits, isRuntimeLimitsOverridden } from "@/lib/settings";
 import { getObjectStorage } from "@/lib/storage";
 import { ensureSharedWorld } from "@/lib/world";
+
+const loadSearch = createLoader({ page: parseAsInteger.withDefault(1) });
 
 export const dynamic = "force-dynamic";
 
@@ -33,10 +40,23 @@ function dateTime(value: string | null) {
   }).format(new Date(value));
 }
 
-export default async function AdminPage() {
+function formatDuration(ms: number | null) {
+  if (ms === null) return "—";
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)}s`;
+}
+
+export default async function AdminPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   await ensureSharedWorld();
-  const stats = getAdminStats();
+  const { page } = await loadSearch(searchParams);
+  const stats = getAdminStats({ page });
   const config = getAppConfig();
+  const limits = getRuntimeLimits();
+  const limitsOverridden = isRuntimeLimitsOverridden();
   const storageMode = getObjectStorage().mode;
   const latestDay = stats.daily.at(-1);
   const maxSpend = Math.max(1, ...stats.daily.map((day) => day.spend));
@@ -48,142 +68,238 @@ export default async function AdminPage() {
   const budgetPercent = Math.min(100, (committed / stats.budget.limit) * 100);
 
   return (
-    <main className="admin-shell">
-      <header className="admin-header">
+    <main className="mx-auto w-full max-w-[88rem] px-5 py-10 sm:px-6">
+      <header className="mb-9 flex flex-col items-start justify-between gap-6 sm:flex-row sm:items-start">
         <div>
-          <p className="eyebrow">private observatory · UTC</p>
-          <h1>Mutation telemetry</h1>
-          <p>Spend, generations, and the health of the shared evolutionary tree.</p>
+          <p className="font-mono text-xs uppercase tracking-wide text-kumo-subtle">
+            private observatory · UTC
+          </p>
+          <Text as="h1" variant="heading1">
+            Mutation telemetry
+          </Text>
+          <p className="mt-2 text-sm text-kumo-subtle">
+            Spend, generations, and the health of the shared evolutionary tree.
+          </p>
         </div>
-        <Link className="quiet-button" href="/">View organism ↗</Link>
+        <div className="flex items-start gap-2">
+          <LinkButton href="/" variant="secondary" size="sm">
+            View organism ↗
+          </LinkButton>
+          <AdminResetButton />
+        </div>
       </header>
 
-      <section className="admin-cards" aria-label="Today’s summary">
-        <article className="metric-card accent-card">
-          <span>spent today</span>
-          <strong>{formatMicrousd(stats.budget.spent)}</strong>
-          <small>
+      <section className="grid grid-cols-2 gap-3 lg:grid-cols-5" aria-label="Today’s summary">
+        <LayerCard className="p-4 ring-1 ring-kumo-brand/25">
+          <p className="font-mono text-xs uppercase tracking-wide text-kumo-subtle">spent today</p>
+          <p className="my-2 truncate text-2xl font-semibold tracking-tight text-kumo-strong sm:text-3xl">
+            {formatMicrousd(stats.budget.spent)}
+          </p>
+          <p className="font-mono text-xs text-kumo-subtle">
             {formatMicrousd(stats.budget.reserved)} reserved · {formatMicrousd(stats.budget.remaining)} free
-          </small>
-          <div className="budget-track" title={`${budgetPercent.toFixed(1)}% committed`}>
-            <span style={{ width: `${budgetPercent}%` }} />
-          </div>
-        </article>
-        <article className="metric-card">
-          <span>pages today</span>
-          <strong>{latestDay?.pages || 0}</strong>
-          <small>{latestDay?.failed || 0} failed attempts</small>
-        </article>
-        <article className="metric-card">
-          <span>all specimens</span>
-          <strong>{pages}</strong>
-          <small>{stats.branches} fork points · depth {maxDepth}</small>
-        </article>
-        <article className="metric-card">
-          <span>daily ceiling</span>
-          <strong>{formatMicrousd(stats.budget.limit)}</strong>
-          <small>resets {dateTime(stats.budget.resetsAt)}</small>
-        </article>
+          </p>
+          <Meter
+            className="mt-3"
+            label="Budget committed"
+            value={committed}
+            max={stats.budget.limit}
+            customValue={`${budgetPercent.toFixed(1)}%`}
+          />
+        </LayerCard>
+        <LayerCard className="p-4">
+          <p className="font-mono text-xs uppercase tracking-wide text-kumo-subtle">pages today</p>
+          <p className="my-2 truncate text-2xl font-semibold tracking-tight text-kumo-strong sm:text-3xl">
+            {latestDay?.pages || 0}
+          </p>
+          <p className="font-mono text-xs text-kumo-subtle">{latestDay?.failed || 0} failed attempts</p>
+        </LayerCard>
+        <LayerCard className="p-4">
+          <p className="font-mono text-xs uppercase tracking-wide text-kumo-subtle">all specimens</p>
+          <p className="my-2 truncate text-2xl font-semibold tracking-tight text-kumo-strong sm:text-3xl">
+            {pages}
+          </p>
+          <p className="font-mono text-xs text-kumo-subtle">
+            {stats.branches} fork points · depth {maxDepth}
+          </p>
+        </LayerCard>
+        <LayerCard className="p-4">
+          <p className="font-mono text-xs uppercase tracking-wide text-kumo-subtle">daily ceiling</p>
+          <p className="my-2 truncate text-2xl font-semibold tracking-tight text-kumo-strong sm:text-3xl">
+            {formatMicrousd(stats.budget.limit)}
+          </p>
+          <p className="font-mono text-xs text-kumo-subtle">resets {dateTime(stats.budget.resetsAt)}</p>
+        </LayerCard>
+        <LayerCard className="p-4">
+          <p className="font-mono text-xs uppercase tracking-wide text-kumo-subtle">generation latency</p>
+          <p className="my-2 truncate text-2xl font-semibold tracking-tight text-kumo-strong sm:text-3xl">
+            {formatDuration(stats.durations.p95Ms)}
+          </p>
+          <p className="font-mono text-xs text-kumo-subtle">
+            p50 {formatDuration(stats.durations.p50Ms)} · max {formatDuration(stats.durations.maxMs)}
+          </p>
+        </LayerCard>
       </section>
 
-      <section className="admin-grid">
-        <article className="admin-panel chart-panel">
-          <div className="panel-heading">
+      <section className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,2fr)_minmax(17rem,0.8fr)]">
+        <LayerCard className="p-4">
+          <div className="flex items-start justify-between gap-4">
             <div>
-              <p className="eyebrow">last 14 days</p>
-              <h2>Generations & spend</h2>
+              <p className="font-mono text-xs uppercase tracking-wide text-kumo-subtle">last 14 days</p>
+              <Text as="h2" variant="heading3">
+                Generations &amp; spend
+              </Text>
             </div>
-            <div className="chart-legend"><span className="page-key">pages</span><span className="spend-key">cost</span></div>
+            <div className="flex items-center gap-3 font-mono text-xs text-kumo-subtle">
+              <span className="inline-flex items-center gap-1.5">
+                <span className="inline-block h-2 w-2 rounded-xs bg-kumo-brand" aria-hidden />
+                pages
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="inline-block h-2 w-2 rounded-xs bg-kumo-badge-orange" aria-hidden />
+                cost
+              </span>
+            </div>
           </div>
-          <div className="day-chart">
+          <div className="mt-6 grid h-60 grid-cols-[repeat(14,minmax(1rem,1fr))] gap-1">
             {stats.daily.map((day) => {
               const pageHeight = Math.max(day.pages ? 5 : 0, (day.pages / maxPages) * 100);
               const spendHeight = Math.max(day.spend ? 5 : 0, (day.spend / maxSpend) * 100);
               return (
-                <div className="day-column" key={day.day} title={`${day.pages} pages · ${formatMicrousd(day.spend)}`}>
-                  <div className="bar-area">
-                    <span className="page-bar" style={{ height: `${pageHeight}%` }} />
-                    <span className="spend-bar" style={{ height: `${spendHeight}%` }} />
+                <div
+                  className="grid min-w-0 grid-rows-[minmax(0,1fr)_1.2rem] gap-1"
+                  key={day.day}
+                  title={`${day.pages} pages · ${formatMicrousd(day.spend)}`}
+                >
+                  <div className="flex min-h-0 items-end justify-center gap-0.5 border-b border-kumo-line bg-kumo-fill/30">
+                    <span
+                      className="w-[38%] rounded-t-xs bg-kumo-brand"
+                      style={{ height: `${pageHeight}%` }}
+                    />
+                    <span
+                      className="w-[38%] rounded-t-xs bg-kumo-badge-orange"
+                      style={{ height: `${spendHeight}%` }}
+                    />
                   </div>
-                  <small>{shortDate(day.day)}</small>
+                  <p className="truncate text-center font-mono text-[10px] text-kumo-subtle">
+                    {shortDate(day.day)}
+                  </p>
                 </div>
               );
             })}
           </div>
-        </article>
+        </LayerCard>
 
-        <article className="admin-panel runtime-panel">
-          <div className="panel-heading">
+        <LayerCard className="p-4">
+          <div className="flex items-start justify-between gap-4">
             <div>
-              <p className="eyebrow">runtime</p>
-              <h2>Configuration</h2>
+              <p className="font-mono text-xs uppercase tracking-wide text-kumo-subtle">runtime</p>
+              <Text as="h2" variant="heading3">
+                Configuration
+              </Text>
             </div>
-            <span className="status-dot">live</span>
+            <Badge variant="success" appearance="dot">
+              live
+            </Badge>
           </div>
-          <dl className="runtime-list">
-            <div><dt>Generator</dt><dd>{config.demoMode ? "Demo mode" : "OpenRouter"}</dd></div>
-            <div><dt>Model</dt><dd title={config.openRouter.model}>{config.openRouter.model}</dd></div>
-            <div><dt>Temperature</dt><dd>{config.openRouter.temperature}</dd></div>
-            <div><dt>Snapshots</dt><dd>{storageMode === "r2" ? "Cloudflare R2" : "Local volume"}</dd></div>
-            <div><dt>Concurrency</dt><dd>{config.mutation.maxConcurrent}</dd></div>
-            <div><dt>Job lease</dt><dd>{config.mutation.staleAfterSeconds}s</dd></div>
-            <div><dt>Visitor quota</dt><dd>{config.mutation.visitorDailyLimit}/day</dd></div>
+          <dl className="mt-4 divide-y divide-kumo-line text-sm">
+            <div className="flex justify-between gap-4 py-2.5">
+              <dt className="text-kumo-subtle">Generator</dt>
+              <dd className="max-w-[65%] truncate font-mono text-xs text-kumo-default">
+                {config.demoMode ? "Demo mode" : "OpenRouter"}
+              </dd>
+            </div>
+            <div className="flex justify-between gap-4 py-2.5">
+              <dt className="text-kumo-subtle">Model</dt>
+              <dd
+                className="max-w-[65%] truncate font-mono text-xs text-kumo-default"
+                title={config.openRouter.model}
+              >
+                {config.openRouter.model}
+              </dd>
+            </div>
+            <div className="flex justify-between gap-4 py-2.5">
+              <dt className="text-kumo-subtle">Temperature</dt>
+              <dd className="max-w-[65%] truncate font-mono text-xs text-kumo-default">
+                {config.openRouter.temperature}
+              </dd>
+            </div>
+            <div className="flex justify-between gap-4 py-2.5">
+              <dt className="text-kumo-subtle">Reasoning</dt>
+              <dd className="max-w-[65%] truncate font-mono text-xs text-kumo-default">Not requested</dd>
+            </div>
+            <div className="flex justify-between gap-4 py-2.5">
+              <dt className="text-kumo-subtle">Provider routing</dt>
+              <dd className="max-w-[65%] truncate font-mono text-xs text-kumo-default">Fastest throughput</dd>
+            </div>
+            <div className="flex justify-between gap-4 py-2.5">
+              <dt className="text-kumo-subtle">Request timeout</dt>
+              <dd className="max-w-[65%] truncate font-mono text-xs text-kumo-default">
+                {config.openRouter.timeoutSeconds}s
+              </dd>
+            </div>
+            <div className="flex justify-between gap-4 py-2.5">
+              <dt className="text-kumo-subtle">Snapshots</dt>
+              <dd className="max-w-[65%] truncate font-mono text-xs text-kumo-default">
+                {storageMode === "r2" ? "Cloudflare R2" : "Local volume"}
+              </dd>
+            </div>
           </dl>
-        </article>
+        </LayerCard>
       </section>
 
-      <section className="admin-panel jobs-panel">
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">latest 30 attempts</p>
-            <h2>Mutation ledger</h2>
+      <section className="mt-3">
+        <LayerCard className="p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="font-mono text-xs uppercase tracking-wide text-kumo-subtle">
+                budget &amp; quotas
+              </p>
+              <Text as="h2" variant="heading3">
+                Limits
+              </Text>
+              <p className="mt-2 text-sm text-kumo-subtle">
+                Adjustable at runtime — takes effect on the next mutation, no redeploy needed.
+              </p>
+            </div>
+            <Badge variant={limitsOverridden ? "info" : "neutral"} appearance="dot">
+              {limitsOverridden ? "overridden" : ".env defaults"}
+            </Badge>
           </div>
-          <small>{failedPages} failed revision{failedPages === 1 ? "" : "s"} retained as audit records</small>
-        </div>
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>time</th>
-                <th>status</th>
-                <th>revision</th>
-                <th>model</th>
-                <th>tokens</th>
-                <th>cost</th>
-              </tr>
-            </thead>
-            <tbody>
-              {stats.recent.length === 0 ? (
-                <tr><td colSpan={6} className="empty-cell">No mutations yet.</td></tr>
-              ) : stats.recent.map((job) => {
-                const tokens = job.promptTokens + job.completionTokens + job.reasoningTokens;
-                return (
-                  <tr key={job.id}>
-                    <td>{dateTime(job.createdAt)}</td>
-                    <td>
-                      <span className={`job-status ${job.status}`}>{job.status}</span>
-                      {job.failureCode && <small className="failure-code">{job.failureCode}</small>}
-                    </td>
-                    <td>
-                      {job.status === "completed" ? (
-                        <Link href={`/w/shared/r/${job.revisionId}`}>{job.title}</Link>
-                      ) : job.title}
-                      <small className="mono-id">{job.revisionId.slice(0, 8)}</small>
-                    </td>
-                    <td className="model-cell">{job.model || "—"}</td>
-                    <td>{tokens.toLocaleString()}</td>
-                    <td>{formatMicrousd(job.costMicrousd)}{job.costIsEstimate ? "*" : ""}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+          <AdminLimitsForm limits={limits} overridden={limitsOverridden} />
+        </LayerCard>
       </section>
 
-      <footer className="admin-footer">
+      <section className="mt-3">
+        <LayerCard className="p-0">
+          <div className="flex items-start justify-between gap-4 p-4">
+            <div>
+              <p className="font-mono text-xs uppercase tracking-wide text-kumo-subtle">
+                {stats.recentTotal} total attempts
+              </p>
+              <Text as="h2" variant="heading3">
+                Mutation logs
+              </Text>
+            </div>
+            <p className="font-mono text-xs text-kumo-subtle">
+              {failedPages} failed revision{failedPages === 1 ? "" : "s"} retained as audit records
+            </p>
+          </div>
+          <div className="overflow-x-auto px-4 pb-4">
+            <AdminJobsTable
+              jobs={stats.recent}
+              recentTotal={stats.recentTotal}
+              page={stats.page}
+              pageSize={stats.pageSize}
+            />
+          </div>
+        </LayerCard>
+      </section>
+
+      <footer className="mt-4 flex flex-col gap-1 pt-2 font-mono text-xs text-kumo-subtle sm:flex-row sm:items-center sm:justify-between">
         <span>SQLite is the source of truth; every ready page is an immutable object snapshot.</span>
-        <a href="/api/health">health.json</a>
+        <a className="text-kumo-subtle hover:text-kumo-default" href="/api/health">
+          health.json
+        </a>
       </footer>
     </main>
   );

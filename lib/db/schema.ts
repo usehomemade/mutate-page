@@ -1,7 +1,6 @@
 import {
   index,
   integer,
-  primaryKey,
   real,
   sqliteTable,
   text,
@@ -38,6 +37,8 @@ export const revisions = sqliteTable(
     generationKey: text("generation_key"),
     contentHash: text("content_hash"),
     model: text("model"),
+    scope: text("scope"),
+    durationMs: integer("duration_ms"),
     temperature: real("temperature"),
     mutationStrength: real("mutation_strength"),
     openrouterGenerationId: text("openrouter_generation_id"),
@@ -59,20 +60,6 @@ export const revisions = sqliteTable(
   ],
 );
 
-export const revisionActions = sqliteTable(
-  "revision_actions",
-  {
-    revisionId: text("revision_id")
-      .notNull()
-      .references(() => revisions.id, { onDelete: "cascade" }),
-    actionId: text("action_id").notNull(),
-    label: text("label").notNull(),
-    intent: text("intent").notNull(),
-    createdAt: text("created_at").notNull(),
-  },
-  (table) => [primaryKey({ columns: [table.revisionId, table.actionId] })],
-);
-
 export const mutationJobs = sqliteTable(
   "mutation_jobs",
   {
@@ -87,7 +74,7 @@ export const mutationJobs = sqliteTable(
       .notNull()
       .references(() => revisions.id),
     actorHash: text("actor_hash").notNull(),
-    actionId: text("action_id"),
+    clickedText: text("clicked_text"),
     status: text("status", {
       enum: ["reserved", "running", "completed", "failed"],
     }).notNull(),
@@ -114,6 +101,5 @@ export const mutationJobs = sqliteTable(
 
 export type World = typeof worlds.$inferSelect;
 export type Revision = typeof revisions.$inferSelect;
-export type RevisionAction = typeof revisionActions.$inferSelect;
 export type MutationJob = typeof mutationJobs.$inferSelect;
 
